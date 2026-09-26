@@ -1,0 +1,33 @@
+/* csslint ignore:start */
+@import 'tailwindcss';
+@theme {
+  --color-fundo: #FCF8F2;
+  --color-verde-claro: #F2E4D4;
+  --color-verde-normal: #527A49;
+  --color-verde-escuro: #5C3A22;
+  --color-verde-destaque: #3F6537;
+  --color-cinza-texto: #4A3B31;
+  --color-cinza-borda: #E7D7C4;
+  --color-dourado: #C9A24B;
+  --color-dourado-escuro: #A17F32;
+  --color-dourado-claro: #F0E1B8;
+}
+body {
+  background-color: var(--color-fundo);
+  color: var(--color-cinza-texto);
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
