@@ -43,7 +43,7 @@ function LoginForm() {
       if (data.cargo === "cozinha") {
         router.push("/painel-pedidos");
       } else if (data.cargo === "admin") {
-        router.push("/painel-pedidos");
+        router.push("/admin");
       } else if (data.cargo === "atendente") {
         router.push("/atendimento");
       } else {

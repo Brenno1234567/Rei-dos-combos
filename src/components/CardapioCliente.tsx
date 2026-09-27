@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { Menu, Search, ShoppingCart, Home, X, Store, Clock, Bike } from "lucide-react";
+import { Menu, Search, ShoppingCart, Home, X, Store, Clock, Bike, Settings } from "lucide-react";
 import CardProduto from "./CardProduto";
 import ModalProduto, { type ProdutoDetalhe } from "./ModalProduto";
 import { useCartStore } from "../contexts/cartStore";
@@ -119,6 +119,10 @@ export function CardapioCliente({ mesa }: { mesa?: string }) {
                   </button>
                   <Link href="/carrinho" onClick={() => setIsMenuOpen(false)} className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-white/10 transition-colors text-sm font-medium">
                     <ShoppingCart size={18} /> Carrinho
+                  </Link>
+                  <div className="my-1 border-t border-white/10" />
+                  <Link href="/admin" onClick={() => setIsMenuOpen(false)} className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-white/10 transition-colors text-sm font-medium text-dourado">
+                    <Settings size={18} /> Painel Administrativo
                   </Link>
                 </nav>
               </div>
