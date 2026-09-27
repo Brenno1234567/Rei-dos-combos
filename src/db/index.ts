@@ -1,13 +1,4 @@
-import { drizzle } from "drizzle-orm/libsql";
-import { createClient } from "@libsql/client";
-import * as schema from "./schema";
+import { getFirestoreDb } from "../lib/firebase-admin";
 
-const url = process.env.TURSO_DATABASE_URL ?? "file:dev.db";
-const authToken = process.env.TURSO_AUTH_TOKEN;
-
-const client = createClient({
-  url,
-  ...(authToken ? { authToken } : {}),
-});
-
-export const db = drizzle(client, { schema });
+export const db = getFirestoreDb();
+export { getFirestoreDb };

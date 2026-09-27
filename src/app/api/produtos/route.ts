@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { produtos } from "../../../db/schema";
 import { requireAdmin, isNextResponse, getAuthRole } from "../../../lib/auth";
 import { invalidarCacheProdutos, listarProdutosAtivosEmCache, listarTodosProdutosEmCache } from "../../../lib/produtos-cache";
+import { getFirestoreDb } from "../../../lib/firebase-admin";
 
 export async function GET() {
   try {
@@ -31,9 +31,9 @@ export async function POST(request: Request) {
     }
 
     const id = crypto.randomUUID();
+    const db = getFirestoreDb();
 
-    const { db } = await import("../../../db");
-    await db.insert(produtos).values({
+    const novoProduto = {
       id,
       nome: body.nome.trim(),
       descricao: String(body.descricao ?? "").trim(),
@@ -41,7 +41,10 @@ export async function POST(request: Request) {
       categoria: body.categoria || "Geral",
       status: "Ativo",
       imagem: body.imagem?.trim() || "https://images.unsplash.com/photo-1546069901-ba9599a7e63c",
-    });
+      criadoEm: Date.now(),
+    };
+
+    await db.collection("produtos").doc(id).set(novoProduto);
     invalidarCacheProdutos();
 
     return NextResponse.json({ success: true, id, message: "Produto cadastrado!" });

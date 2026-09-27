@@ -1,9 +1,7 @@
 import { NextResponse } from "next/server";
-import { db } from "../../../../db";
-import { produtos } from "../../../../db/schema";
-import { eq } from "drizzle-orm";
 import { requireAdmin, isNextResponse } from "../../../../lib/auth";
 import { invalidarCacheProdutos } from "../../../../lib/produtos-cache";
+import { getFirestoreDb } from "../../../../lib/firebase-admin";
 
 export async function PUT(
   request: Request,
@@ -25,17 +23,22 @@ export async function PUT(
       return NextResponse.json({ error: "Preço inválido." }, { status: 400 });
     }
 
-    await db
-      .update(produtos)
-      .set({
+    const db = getFirestoreDb();
+    const docRef = db.collection("produtos").doc(id);
+
+    await docRef.set(
+      {
         nome: body.nome.trim(),
         descricao: String(body.descricao ?? "").trim(),
         preco,
         categoria: body.categoria || "Geral",
         imagem: body.imagem?.trim() || "https://images.unsplash.com/photo-1546069901-ba9599a7e63c",
         status: body.status === "Inativo" ? "Inativo" : "Ativo",
-      })
-      .where(eq(produtos.id, id));
+        atualizadoEm: Date.now(),
+      },
+      { merge: true }
+    );
+
     invalidarCacheProdutos();
 
     return NextResponse.json({ success: true, message: "Produto atualizado!" });
@@ -54,7 +57,8 @@ export async function DELETE(
 
   try {
     const { id } = await params;
-    await db.delete(produtos).where(eq(produtos.id, id));
+    const db = getFirestoreDb();
+    await db.collection("produtos").doc(id).delete();
     invalidarCacheProdutos();
     return NextResponse.json({ success: true, message: "Produto excluído com sucesso!" });
   } catch (error) {

@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
-import { db } from "../../../../db";
-import { usuarios } from "../../../../db/schema";
 import { hashPin } from "../../../../lib/auth";
+import { getFirestoreDb } from "../../../../lib/firebase-admin";
 
 export async function POST(request: Request) {
   try {
@@ -13,23 +12,26 @@ export async function POST(request: Request) {
       }
     }
 
-    const existing = await db.select().from(usuarios).limit(1);
-    if (existing.length > 0) {
+    const db = getFirestoreDb();
+    const existing = await db.collection("usuarios").limit(1).get();
+    if (!existing.empty) {
       return NextResponse.json(
         { error: "Setup já realizado. Use o painel de usuários." },
         { status: 403 }
       );
     }
 
-    // Gera um PIN aleatório de 6 dígitos em vez de um valor fixo e previsível.
+    // Gera um PIN aleatório de 6 dígitos
     const pinGerado = String(Math.floor(100000 + Math.random() * 900000));
     const pinHash = await hashPin(pinGerado);
+    const id = crypto.randomUUID();
 
-    await db.insert(usuarios).values({
-      id: crypto.randomUUID(),
+    await db.collection("usuarios").doc(id).set({
+      id,
       nome: "Administrador",
       cargo: "admin",
       pin: pinHash,
+      criadoEm: Date.now(),
     });
 
     return NextResponse.json({

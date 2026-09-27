@@ -1,8 +1,6 @@
 import { NextResponse } from "next/server";
-import { db } from "../../../../db";
-import { usuarios } from "../../../../db/schema";
-import { eq, and, ne } from "drizzle-orm";
 import { requireAdmin, isNextResponse, hashPin, normalizeCargo } from "../../../../lib/auth";
+import { getFirestoreDb } from "../../../../lib/firebase-admin";
 
 export async function PUT(
   request: Request,
@@ -23,46 +21,42 @@ export async function PUT(
       return NextResponse.json({ error: "Nome e cargo são obrigatórios" }, { status: 400 });
     }
 
-    // Valida o PIN: aceita 4 a 8 caracteres (numéricos ou alfanuméricos)
     if (pin !== undefined && pin !== null && pin !== "") {
       const pinStr = String(pin).trim();
-      if (pinStr.length < 4 || pinStr.length > 8) {
+      if (pinStr.length < 4 || pinStr.length > 32) {
         return NextResponse.json(
-          { error: "O PIN deve ter entre 4 e 8 caracteres." },
+          { error: "A senha deve ter entre 4 e 32 caracteres." },
           { status: 400 }
         );
       }
     }
 
-    // Normaliza o cargo e valida
     const cargoNormalizado = normalizeCargo(cargo);
     if (!cargoNormalizado) {
       return NextResponse.json({ error: "Cargo inválido." }, { status: 400 });
     }
 
-    // Garante que só exista 1 admin cadastrado (ignorando o próprio usuário sendo editado)
-    if (cargoNormalizado === "admin") {
-      const outroAdmin = await db
-        .select()
-        .from(usuarios)
-        .where(and(eq(usuarios.cargo, "admin"), ne(usuarios.id, id)));
+    const db = getFirestoreDb();
 
-      if (outroAdmin.length > 0) {
-        return NextResponse.json({ error: "Já existe um administrador cadastrado" }, { status: 400 });
+    if (cargoNormalizado === "admin") {
+      const adminSnapshot = await db.collection("usuarios").where("cargo", "==", "admin").get();
+      const outroAdmin = adminSnapshot.docs.find((doc) => doc.id !== id);
+      if (outroAdmin) {
+        return NextResponse.json({ error: "Já existe um administrador cadastrado." }, { status: 400 });
       }
     }
 
-    const dadosAtualizados: Record<string, string> = {
+    const dadosAtualizados: Record<string, any> = {
       nome: nome.trim(),
       cargo: cargoNormalizado,
+      atualizadoEm: Date.now(),
     };
 
-    // Se um novo PIN foi fornecido, faz o hash antes de salvar (segurança)
     if (pin && String(pin).trim()) {
       dadosAtualizados.pin = await hashPin(String(pin).trim());
     }
 
-    await db.update(usuarios).set(dadosAtualizados).where(eq(usuarios.id, id));
+    await db.collection("usuarios").doc(id).set(dadosAtualizados, { merge: true });
 
     return NextResponse.json({ success: true, message: "Usuário atualizado!" });
   } catch (error) {
@@ -79,7 +73,8 @@ export async function DELETE(
   if (isNextResponse(auth)) return auth;
   try {
     const { id } = await params;
-    await db.delete(usuarios).where(eq(usuarios.id, id));
+    const db = getFirestoreDb();
+    await db.collection("usuarios").doc(id).delete();
     return NextResponse.json({ success: true, message: "Usuário excluído!" });
   } catch (error) {
     console.error("Erro ao excluir usuário:", error);

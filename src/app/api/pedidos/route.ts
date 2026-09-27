@@ -1,22 +1,20 @@
 import { NextResponse } from "next/server";
-import { db } from "../../../db";
-import { pedidos, itensPedido, produtos, configuracoes } from "../../../db/schema";
-import { eq, inArray } from "drizzle-orm";
 import { requireKitchen, requireAuth, isNextResponse } from "../../../lib/auth";
 import { pusherServer } from "../../../lib/pusher-server";
+import { getFirestoreDb } from "../../../lib/firebase-admin";
 
 interface ItemPedidoInput {
   id?: string;
   nome: string;
   quantidade: number;
   preco: number;
-  variacao?: string;
 }
 
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const idsParam = searchParams.get("ids");
+    const db = getFirestoreDb();
 
     // Cliente sem login: só pode buscar os próprios pedidos, informando os IDs
     if (idsParam !== null) {
@@ -29,30 +27,25 @@ export async function GET(request: Request) {
         return NextResponse.json([]);
       }
 
-      const listaPedidos = await db.select().from(pedidos).where(inArray(pedidos.id, ids));
-      const listaItens = await db
-        .select()
-        .from(itensPedido)
-        .where(inArray(itensPedido.pedidoId, ids));
+      const pedidosList: any[] = [];
+      for (const id of ids) {
+        const doc = await db.collection("pedidos").doc(id).get();
+        if (doc.exists) {
+          pedidosList.push({ id: doc.id, ...doc.data() });
+        }
+      }
 
-      const pedidosComItens = listaPedidos.map((pedido) => ({
-        ...pedido,
-        itens: listaItens.filter((item) => item.pedidoId === pedido.id),
-      }));
-
-      return NextResponse.json(pedidosComItens);
+      return NextResponse.json(pedidosList);
     }
 
     // Listagem completa: só a equipe pode ver todos os pedidos.
     const auth = await requireAuth(["admin", "cozinha", "atendente"]);
     if (isNextResponse(auth)) return auth;
 
-    const listaPedidos = await db.select().from(pedidos);
-    const listaItens = await db.select().from(itensPedido);
-
-    const pedidosComItens = listaPedidos.map((pedido) => ({
-      ...pedido,
-      itens: listaItens.filter((item) => item.pedidoId === pedido.id),
+    const snapshot = await db.collection("pedidos").orderBy("criadoEm", "desc").get();
+    const pedidosComItens = snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
     }));
 
     return NextResponse.json(pedidosComItens);
@@ -64,8 +57,11 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const config = await db.select().from(configuracoes).limit(1);
-    if (config.length > 0 && !config[0].statusLoja) {
+    const db = getFirestoreDb();
+    const configDoc = await db.collection("configuracoes").doc("principal").get();
+    const configData = configDoc.data();
+
+    if (configDoc.exists && configData?.statusLoja === false) {
       return NextResponse.json(
         { error: "A loja está fechada no momento. Tente novamente mais tarde." },
         { status: 403 }
@@ -101,12 +97,15 @@ export async function POST(request: Request) {
       .map((i) => i.id)
       .filter((id): id is string => typeof id === "string");
 
-    const produtosDb =
-      ids.length > 0
-        ? await db.select().from(produtos).where(inArray(produtos.id, ids))
-        : [];
-
-    const produtoMap = new Map(produtosDb.map((p) => [p.id, p]));
+    const produtoMap = new Map<string, any>();
+    if (ids.length > 0) {
+      for (const id of ids) {
+        const pDoc = await db.collection("produtos").doc(id).get();
+        if (pDoc.exists) {
+          produtoMap.set(id, pDoc.data());
+        }
+      }
+    }
 
     let totalCalculado = 0;
 
@@ -130,7 +129,7 @@ export async function POST(request: Request) {
             { status: 400 }
           );
         }
-        totalCalculado += produto.preco * item.quantidade;
+        totalCalculado += Number(produto.preco) * item.quantidade;
       } else if (typeof item.preco === "number" && item.preco >= 0) {
         totalCalculado += item.preco * item.quantidade;
       } else {
@@ -151,46 +150,43 @@ export async function POST(request: Request) {
 
     const pedidoId = crypto.randomUUID();
     const tokenCancelamento = crypto.randomUUID();
-    const criadoEm = new Date();
+    const criadoEm = Date.now();
 
-    // 1. Salva no banco de dados primeiro
-    await db.transaction(async (tx) => {
-      await tx.insert(pedidos).values({
-        id: pedidoId,
-        mesa: mesaFormatada,
-        cliente: clienteFormatado,
-        status: "pendente",
-        observacao: obsFormatada,
-        total: totalCalculado,
-        criadoEm,
-        tokenCancelamento,
-        telefone: telefone ? String(telefone).trim() : null,
-        tipoPedido: tipo,
-        endereco: endereco ? String(endereco).trim() : null,
-        bairro: bairro ? String(bairro).trim() : null,
-        complemento: complemento ? String(complemento).trim() : null,
-        pontoReferencia: pontoReferencia ? String(pontoReferencia).trim() : null,
-        formaPagamento: formaPagamento ? String(formaPagamento).trim() : null,
-        trocoPara: trocoPara ? String(trocoPara).trim() : null,
-      });
+    const itensParaSalvar = (itens as ItemPedidoInput[]).map((item) => {
+      const produto = item.id ? produtoMap.get(item.id) : undefined;
+      const precoUnitario = produto?.preco ?? Number(item.preco);
 
-      const itensParaSalvar = (itens as ItemPedidoInput[]).map((item) => {
-        const produto = item.id ? produtoMap.get(item.id) : undefined;
-        const precoUnitario = produto?.preco ?? Number(item.preco);
-
-        return {
-          id: crypto.randomUUID(),
-          pedidoId,
-          produtoNome: produto?.nome ?? item.nome.trim(),
-          quantidade: Number(item.quantidade),
-          precoUnitario,
-        };
-      });
-
-      await tx.insert(itensPedido).values(itensParaSalvar);
+      return {
+        id: crypto.randomUUID(),
+        produtoNome: produto?.nome ?? item.nome.trim(),
+        quantidade: Number(item.quantidade),
+        precoUnitario,
+      };
     });
 
-    // 2. Dispara o sinal do Pusher após salvar no banco
+    const novoPedido = {
+      id: pedidoId,
+      mesa: mesaFormatada,
+      cliente: clienteFormatado,
+      status: "pendente",
+      observacao: obsFormatada,
+      total: totalCalculado,
+      criadoEm,
+      tokenCancelamento,
+      telefone: telefone ? String(telefone).trim() : null,
+      tipoPedido: tipo,
+      endereco: endereco ? String(endereco).trim() : null,
+      bairro: bairro ? String(bairro).trim() : null,
+      complemento: complemento ? String(complemento).trim() : null,
+      pontoReferencia: pontoReferencia ? String(pontoReferencia).trim() : null,
+      formaPagamento: formaPagamento ? String(formaPagamento).trim() : null,
+      trocoPara: trocoPara ? String(trocoPara).trim() : null,
+      itens: itensParaSalvar,
+    };
+
+    await db.collection("pedidos").doc(pedidoId).set(novoPedido);
+
+    // Dispara o sinal do Pusher após salvar no banco
     try {
       await pusherServer?.trigger("canal-restaurante", "novo-pedido", {
         mensagem: "Você tem um novo pedido!",
@@ -231,10 +227,11 @@ export async function PATCH(request: Request) {
       );
     }
 
-    await db
-      .update(pedidos)
-      .set({ status: statusFormatado })
-      .where(eq(pedidos.id, String(id)));
+    const db = getFirestoreDb();
+    await db.collection("pedidos").doc(String(id)).set(
+      { status: statusFormatado, atualizadoEm: Date.now() },
+      { merge: true }
+    );
 
     try {
       await pusherServer?.trigger("canal-restaurante", "status-atualizado", {
@@ -259,10 +256,8 @@ export async function DELETE(request: Request) {
   const id = typeof body?.id === "string" ? body.id : "";
   if (!id) return NextResponse.json({ error: "ID do pedido obrigatorio." }, { status: 400 });
   try {
-    await db.transaction(async (tx) => {
-      await tx.delete(itensPedido).where(eq(itensPedido.pedidoId, id));
-      await tx.delete(pedidos).where(eq(pedidos.id, id));
-    });
+    const db = getFirestoreDb();
+    await db.collection("pedidos").doc(id).delete();
     return NextResponse.json({ success: true });
   } catch {
     return NextResponse.json({ error: "Erro ao excluir pedido." }, { status: 500 });

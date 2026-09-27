@@ -1,22 +1,26 @@
 import { NextResponse } from "next/server";
-import { db } from "../../../db";
-import { configuracoes } from "../../../db/schema";
-import { eq } from "drizzle-orm";
 import { requireAdmin, isNextResponse } from "../../../lib/auth";
+import { getFirestoreDb } from "../../../lib/firebase-admin";
+
+const CONFIG_DOC_ID = "principal";
 
 export async function GET() {
   try {
-    const [config] = await db.select().from(configuracoes).limit(1);
+    const db = getFirestoreDb();
+    const doc = await db.collection("configuracoes").doc(CONFIG_DOC_ID).get();
+    const data = doc.exists ? doc.data() : null;
+
     return NextResponse.json({
-      nomeRestaurante: config?.nomeRestaurante || "Rei dos Combos",
-      statusLoja: config?.statusLoja ?? true,
-      tempoPreparo: config?.tempoPreparo ?? "30-45",
-      whatsapp: config?.whatsapp || "5514999999999",
-      chavePix: config?.chavePix || "",
-      tipoChavePix: config?.tipoChavePix || "Aleatória",
-      taxaEntrega: config?.taxaEntrega ?? 8.0,
+      nomeRestaurante: data?.nomeRestaurante || "Rei dos Combos",
+      statusLoja: data?.statusLoja ?? true,
+      tempoPreparo: data?.tempoPreparo ?? "30-45",
+      whatsapp: data?.whatsapp || "5514999999999",
+      chavePix: data?.chavePix || "",
+      tipoChavePix: data?.tipoChavePix || "Aleatória",
+      taxaEntrega: Number(data?.taxaEntrega ?? 8.0),
     });
-  } catch {
+  } catch (error) {
+    console.error("Erro ao buscar configurações:", error);
     return NextResponse.json({ error: "Erro interno ao buscar configurações." }, { status: 500 });
   }
 }
@@ -28,7 +32,7 @@ export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => null);
     if (!body) return NextResponse.json({ error: "Dados inválidos." }, { status: 400 });
-    const [existente] = await db.select().from(configuracoes).limit(1);
+
     const valores = {
       nomeRestaurante: String(body.nomeRestaurante || "Rei dos Combos"),
       statusLoja: Boolean(body.statusLoja ?? true),
@@ -37,14 +41,15 @@ export async function POST(request: Request) {
       chavePix: String(body.chavePix || ""),
       tipoChavePix: String(body.tipoChavePix || "Aleatória"),
       taxaEntrega: Number(body.taxaEntrega ?? 8.0),
+      atualizadoEm: Date.now(),
     };
-    if (!existente) {
-      await db.insert(configuracoes).values({ id: "config-principal", ...valores });
-    } else {
-      await db.update(configuracoes).set(valores).where(eq(configuracoes.id, existente.id));
-    }
+
+    const db = getFirestoreDb();
+    await db.collection("configuracoes").doc(CONFIG_DOC_ID).set(valores, { merge: true });
+
     return NextResponse.json({ success: true, ...valores });
-  } catch {
+  } catch (error) {
+    console.error("Erro ao salvar configurações:", error);
     return NextResponse.json({ error: "Erro interno ao salvar configurações." }, { status: 500 });
   }
 }

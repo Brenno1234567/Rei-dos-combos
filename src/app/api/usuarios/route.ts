@@ -1,16 +1,18 @@
 import { NextResponse } from "next/server";
-import { db } from "../../../db";
-import { usuarios } from "../../../db/schema";
-import { asc } from "drizzle-orm";
 import { requireAdmin, isNextResponse, hashPin, normalizeCargo } from "../../../lib/auth";
+import { getFirestoreDb } from "../../../lib/firebase-admin";
 
 export async function GET() {
   const auth = await requireAdmin();
   if (isNextResponse(auth)) return auth;
 
   try {
-    const lista = await db.select().from(usuarios).orderBy(asc(usuarios.nome));
-    const safe = lista.map(({ pin: _pin, ...rest }) => rest);
+    const db = getFirestoreDb();
+    const snapshot = await db.collection("usuarios").orderBy("nome", "asc").get();
+    const safe = snapshot.docs.map((doc) => {
+      const { pin: _pin, ...rest } = doc.data();
+      return { id: doc.id, ...rest };
+    });
     return NextResponse.json(safe);
   } catch (error) {
     console.error("Erro ao buscar usuários:", error);
@@ -35,13 +37,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Cargo inválido." }, { status: 400 });
     }
 
-    if (cargoNormalizado === "admin") {
-      const usuariosExistentes = await db.select().from(usuarios);
-      const jaExisteAdmin = usuariosExistentes.some(
-        (usuario) => normalizeCargo(usuario.cargo) === "admin"
-      );
+    const db = getFirestoreDb();
 
-      if (jaExisteAdmin) {
+    if (cargoNormalizado === "admin") {
+      const adminSnapshot = await db.collection("usuarios").where("cargo", "==", "admin").limit(1).get();
+      if (!adminSnapshot.empty) {
         return NextResponse.json(
           { error: "Já existe um administrador cadastrado." },
           { status: 409 }
@@ -65,9 +65,10 @@ export async function POST(request: Request) {
       nome: nome.trim(),
       cargo: cargoNormalizado,
       pin: pinHash,
+      criadoEm: Date.now(),
     };
 
-    await db.insert(usuarios).values(novoUsuario);
+    await db.collection("usuarios").doc(id).set(novoUsuario);
 
     const { pin: _pin, ...safe } = novoUsuario;
     return NextResponse.json(safe, { status: 201 });

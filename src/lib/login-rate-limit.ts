@@ -1,7 +1,5 @@
 import { createHash } from "node:crypto";
-import { sql, eq } from "drizzle-orm";
-import { db } from "@/db";
-import { tentativasLogin } from "../db/schema";
+import { getFirestoreDb } from "./firebase-admin";
 
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_MS = 15 * 60 * 1000;
@@ -10,8 +8,6 @@ type LoginAttemptStatus = {
   allowed: boolean;
   retryAfterSeconds?: number;
 };
-
-let tableReady: Promise<void> | undefined;
 
 function getClientIdentifier(request: Request): string {
   const forwardedFor = request.headers.get("x-forwarded-for");
@@ -22,90 +18,91 @@ function getClientIdentifier(request: Request): string {
   return createHash("sha256").update(ip).digest("hex");
 }
 
-async function ensureTable(): Promise<void> {
-  tableReady ??= db.run(sql`
-    CREATE TABLE IF NOT EXISTS tentativas_login (
-      identificador TEXT PRIMARY KEY,
-      tentativas INTEGER NOT NULL DEFAULT 0,
-      bloqueado_ate INTEGER,
-      atualizado_em INTEGER NOT NULL
-    )
-  `).then(() => undefined);
-
-  await tableReady;
-}
-
 function retryAfterSeconds(blockedUntil: number, now: number): number {
   return Math.max(1, Math.ceil((blockedUntil - now) / 1000));
 }
 
 export async function checkLoginRateLimit(request: Request): Promise<LoginAttemptStatus> {
-  await ensureTable();
-
   const now = Date.now();
   const identifier = getClientIdentifier(request);
-  
-  // Consulta segura usando o Drizzle ORM compatível com LibSQL
-  const rows = await db
-    .select({
-      bloqueadoAte: tentativasLogin.bloqueadoAte,
-    })
-    .from(tentativasLogin)
-    .where(eq(tentativasLogin.identificador, identifier))
-    .limit(1);
 
-  const attempt = rows[0];
+  try {
+    const db = getFirestoreDb();
+    const doc = await db.collection("tentativasLogin").doc(identifier).get();
 
-  if (attempt?.bloqueadoAte && attempt.bloqueadoAte > now) {
-    return {
-      allowed: false,
-      retryAfterSeconds: retryAfterSeconds(attempt.bloqueadoAte, now),
-    };
+    if (!doc.exists) {
+      return { allowed: true };
+    }
+
+    const data = doc.data();
+    if (data?.bloqueadoAte && data.bloqueadoAte > now) {
+      return {
+        allowed: false,
+        retryAfterSeconds: retryAfterSeconds(data.bloqueadoAte, now),
+      };
+    }
+  } catch (error) {
+    console.error("Erro ao verificar rate limit:", error);
   }
 
   return { allowed: true };
 }
 
 export async function registerFailedLogin(request: Request): Promise<LoginAttemptStatus> {
-  await ensureTable();
-
   const now = Date.now();
   const identifier = getClientIdentifier(request);
   const lockedUntil = now + LOCKOUT_MS;
 
-  await db.run(sql`
-    INSERT INTO tentativas_login (identificador, tentativas, bloqueado_ate, atualizado_em)
-    VALUES (${identifier}, 1, NULL, ${now})
-    ON CONFLICT(identificador) DO UPDATE SET
-      tentativas = CASE
-        WHEN tentativas_login.bloqueado_ate IS NOT NULL
-          AND tentativas_login.bloqueado_ate > ${now}
-          THEN tentativas_login.tentativas
-        WHEN tentativas_login.bloqueado_ate IS NOT NULL THEN 1
-        ELSE tentativas_login.tentativas + 1
-      END,
-      bloqueado_ate = CASE
-        WHEN tentativas_login.bloqueado_ate IS NOT NULL
-          AND tentativas_login.bloqueado_ate > ${now}
-          THEN tentativas_login.bloqueado_ate
-        WHEN tentativas_login.bloqueado_ate IS NOT NULL THEN NULL
-        WHEN tentativas_login.tentativas + 1 >= ${MAX_FAILED_ATTEMPTS}
-          THEN ${lockedUntil}
-        ELSE NULL
-      END,
-      atualizado_em = ${now}
-  `);
+  try {
+    const db = getFirestoreDb();
+    const docRef = db.collection("tentativasLogin").doc(identifier);
+    const doc = await docRef.get();
 
-  return checkLoginRateLimit(request);
+    if (!doc.exists) {
+      await docRef.set({
+        identificador: identifier,
+        tentativas: 1,
+        bloqueadoAte: null,
+        atualizadoEm: now,
+      });
+      return { allowed: true };
+    }
+
+    const data = doc.data();
+    const tentativasAnteriores = Number(data?.tentativas || 0);
+    const novasTentativas = tentativasAnteriores + 1;
+    const deveBloquear = novasTentativas >= MAX_FAILED_ATTEMPTS;
+
+    await docRef.set(
+      {
+        tentativas: novasTentativas,
+        bloqueadoAte: deveBloquear ? lockedUntil : null,
+        atualizadoEm: now,
+      },
+      { merge: true }
+    );
+
+    if (deveBloquear) {
+      return {
+        allowed: false,
+        retryAfterSeconds: retryAfterSeconds(lockedUntil, now),
+      };
+    }
+  } catch (error) {
+    console.error("Erro ao registrar tentativa:", error);
+  }
+
+  return { allowed: true };
 }
 
 export async function clearLoginRateLimit(request: Request): Promise<void> {
-  await ensureTable();
-
-  await db.run(sql`
-    DELETE FROM tentativas_login
-    WHERE identificador = ${getClientIdentifier(request)}
-  `);
+  const identifier = getClientIdentifier(request);
+  try {
+    const db = getFirestoreDb();
+    await db.collection("tentativasLogin").doc(identifier).delete();
+  } catch (error) {
+    console.error("Erro ao limpar rate limit:", error);
+  }
 }
 
 export function rateLimitError(retryAfterSeconds: number) {

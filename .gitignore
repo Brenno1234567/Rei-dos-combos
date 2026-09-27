@@ -44,6 +44,8 @@ dev.db
 
 # credenciais (chave privada de service account)
 erva-doce-credenciais.json
+*-firebase-adminsdk-*.json
+.firebase/
 
 # typescript
 *.tsbuildinfo

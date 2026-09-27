@@ -1,6 +1,4 @@
 import { NextResponse } from "next/server";
-import { db } from "../../../../db";
-import { usuarios } from "../../../../db/schema";
 import {
   verifyPin,
   setAuthCookies,
@@ -12,6 +10,7 @@ import {
   rateLimitError,
   registerFailedLogin,
 } from "../../../../lib/login-rate-limit";
+import { getFirestoreDb } from "../../../../lib/firebase-admin";
 
 export async function POST(request: Request) {
   try {
@@ -37,14 +36,18 @@ export async function POST(request: Request) {
       );
     }
 
-    const users = await db.select().from(usuarios);
-    let matchedUser = null;
+    const db = getFirestoreDb();
+    const usersSnapshot = await db.collection("usuarios").get();
+    let matchedUser: any = null;
 
-    for (const user of users) {
-      const valid = await verifyPin(pin, user.pin);
-      if (valid) {
-        matchedUser = user;
-        break;
+    for (const doc of usersSnapshot.docs) {
+      const user = doc.data();
+      if (user.pin) {
+        const valid = await verifyPin(pin, user.pin);
+        if (valid) {
+          matchedUser = { id: doc.id, ...user };
+          break;
+        }
       }
     }
 
